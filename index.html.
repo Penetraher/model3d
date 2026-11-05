@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="3D STL">
+<meta name="theme-color" content="#111111">
+<title>3D STL</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 24px 18px; font-family: -apple-system, system-ui, sans-serif; background: #111; color: #fff; }
+  h1 { font-size: 24px; margin: 0 0 18px; }
+  label.pick { display: block; padding: 18px; border: 2px dashed #555; border-radius: 14px; text-align: center; color: #bbb; }
+  input[type=file] { display: none; }
+  img#preview { display: none; width: 100%; max-height: 260px; object-fit: contain; margin-top: 12px; border-radius: 12px; }
+  textarea { width: 100%; height: 100px; margin-top: 14px; padding: 12px; font-size: 16px; border-radius: 12px; border: 1px solid #444; background: #1c1c1c; color: #fff; }
+  button { width: 100%; margin-top: 14px; padding: 16px; font-size: 18px; border: 0; border-radius: 14px; background: #3b82f6; color: #fff; }
+  button:disabled { background: #444; }
+  #status { margin-top: 16px; color: #aaa; min-height: 24px; }
+  #download { display: none; background: #22c55e; }
+  #error { color: #f87171; margin-top: 12px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1>Фото или текст в STL</h1>
+
+<label class="pick" id="pickLabel">Выбрать фото (необязательно)
+  <input type="file" id="file" accept="image/*">
+</label>
+<img id="preview" alt="">
+
+<textarea id="prompt" placeholder="Описание (необязательно, если есть фото)"></textarea>
+
+<button id="go">Создать</button>
+<div id="status"></div>
+<div id="error"></div>
+<button id="download">Скачать STL</button>
+
+<script type="module">
+import * as THREE from "https://esm.sh/three@0.160.0";
+import { GLTFLoader } from "https://esm.sh/three@0.160.0/examples/jsm/loaders/GLTFLoader.js";
+import { STLExporter } from "https://esm.sh/three@0.160.0/examples/jsm/exporters/STLExporter.js";
+
+const $ = (id) => document.getElementById(id);
+let stlBlob = null;
+
+$("file").addEventListener("change", (e) => {
+  const f = e.target.files[0];
+  if (!f) return;
+  $("preview").src = URL.createObjectURL(f);
+  $("preview").style.display = "block";
+  $("pickLabel").firstChild.textContent = "Фото выбрано. Нажми, чтобы заменить\n";
+});
+
+$("go").addEventListener("click", async () => {
+  const file = $("file").files[0];
+  const prompt = $("prompt").value.trim();
+  $("error").textContent = "";
+  $("download").style.display = "none";
+  if (!file && !prompt) { $("error").textContent = "Добавь фото или напиши описание."; return; }
+
+  $("go").disabled = true;
+  $("status").textContent = "Генерирую. Это может занять от одной до нескольких минут, не закрывай приложение...";
+
+  try {
+    const form = new FormData();
+    if (file) form.append("image", file);
+    form.append("prompt", prompt);
+
+    const r = await fetch("/generate", { method: "POST", body: form });
+    const data = await r.json();
+    if (!r.ok || data.error) throw new Error(data.error || "Ошибка сервера");
+
+    $("status").textContent = "Модель готова, превращаю в STL...";
+    const glbResp = await fetch(data.url);
+    const glbBuf = await glbResp.arrayBuffer();
+
+    const gltf = await new Promise((res, rej) => new GLTFLoader().parse(glbBuf, "", res, rej));
+    const scene = gltf.scene;
+
+    // приводим размер к 100 мм по самой длинной стороне
+    const box = new THREE.Box3().setFromObject(scene);
+    const size = new THREE.Vector3(); box.getSize(size);
+    const k = 100 / Math.max(size.x, size.y, size.z);
+    scene.scale.setScalar(k);
+    scene.updateMatrixWorld(true);
+
+    const stl = new STLExporter().parse(scene, { binary: true });
+    stlBlob = new Blob([stl], { type: "model/stl" });
+
+    $("status").textContent = "Готово. Размер модели 100 мм по длинной стороне.";
+    $("download").style.display = "block";
+  } catch (e) {
+    $("status").textContent = "";
+    $("error").textContent = "Ошибка: " + (e.message || e);
+  } finally {
+    $("go").disabled = false;
+  }
+});
+
+$("download").addEventListener("click", () => {
+  if (!stlBlob) return;
+  const file = new File([stlBlob], "model.stl", { type: "model/stl" });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    navigator.share({ files: [file], title: "model.stl" }).catch(() => {});
+  } else {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(stlBlob);
+    a.download = "model.stl";
+    a.click();
+  }
+});
+</script>
+</body>
+</html>
